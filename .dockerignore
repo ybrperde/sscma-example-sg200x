@@ -1,0 +1,8 @@
+.git
+.vscode
+**/build
+**/install
+*.a
+*.so
+Dockerfile
+docker-compose.yml

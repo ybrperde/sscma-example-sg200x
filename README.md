@@ -83,6 +83,43 @@ cd build && cpack
 
 This will generate a **.deb** package, which can be installed on the device.  
 
+## Docker Build Environment
+
+The repository includes a Docker environment that uses the prebuilt SDK in
+`.sdk/sg2002_recamera_emmc/`. It provides the Sophgo RISC-V musl toolchain and
+writes build output to the selected solution directory on the host.
+
+Build the image from the repository root:
+
+```bash
+docker build --platform linux/amd64 -t sscma-sg200x .
+```
+
+Build a solution, for example `helloworld`:
+
+```bash
+docker run --rm \
+   --platform linux/amd64 \
+   -v "$PWD:/workspace" \
+   sscma-sg200x helloworld
+```
+
+The container sets `CC` and `CXX` to the SDK-compatible RISC-V compilers before
+CMake configures the solution. Rebuild the image after changing the Dockerfile.
+
+Create the `.deb` package as part of the build:
+
+```bash
+docker run --rm \
+   --platform linux/amd64 \
+   -e PACKAGE=1 \
+   -v "$PWD:/workspace" \
+   sscma-sg200x helloworld
+```
+
+Set `BUILD_TYPE` to choose another CMake build type. Replace `helloworld` with
+any directory under `solutions/` that contains a `CMakeLists.txt` file.
+
 ## Deploying the Application  
 
 ### 1. Transfer the Package to the Device  
