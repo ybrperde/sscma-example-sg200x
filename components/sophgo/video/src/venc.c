@@ -939,8 +939,16 @@ static void* Thread_Streaming_Proc(void* pArgs)
             APP_PROF_LOG_PRINT(LEVEL_ERROR, "VencChn(%d) select failed!\n", VencChn);
             break;
         } else if (s32Ret == 0) {
-            APP_PROF_LOG_PRINT(LEVEL_DEBUG, "VencChn(%d) select timeout %u ms \n",
-                VencChn, (GetCurTimeInMsec() - iTime));
+            static uint32_t venc_to;
+            if ((++venc_to % 25) == 0) {
+                VI_CHN_STATUS_S stViStat;
+                memset(&stViStat, 0, sizeof(stViStat));
+                CVI_VI_QueryChnStatus(0, 0, &stViStat);
+                printf("venc ch%d select timeout x%u | vi recv=%u int=%u lost=%u vbFail=%u fps=%u size=%ux%u\n",
+                       VencChn, venc_to, stViStat.u32RecvPic, stViStat.u32IntCnt,
+                       stViStat.u32LostFrame, stViStat.u32VbFail, stViStat.u32FrameRate,
+                       stViStat.stSize.u32Width, stViStat.stSize.u32Height);
+            }
             continue;
         }
 
@@ -955,7 +963,11 @@ static void* Thread_Streaming_Proc(void* pArgs)
         ISP_EXP_INFO_S stExpInfo;
         memset(&stExpInfo, 0, sizeof(stExpInfo));
         CVI_ISP_QueryExposureInfo(0, &stExpInfo);
-        CVI_S32 timeout = (1000 * 2) / (stExpInfo.u32Fps / 100); // u32Fps = fps * 100
+        CVI_S32 fps_i = (CVI_S32)(stExpInfo.u32Fps / 100);
+        if (fps_i <= 0) {
+            fps_i = 15;
+        }
+        CVI_S32 timeout = (1000 * 2) / fps_i;
         s32Ret = CVI_VENC_GetStream(VencChn, &stStream, timeout);
         if (pastVencChnCfg->enBindMode == VENC_BIND_DISABLE) {
             CVI_VPSS_ReleaseChnFrame(vpssGrp, vpssChn, &stVpssFrame);

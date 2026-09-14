@@ -721,6 +721,9 @@ CVI_S32 app_ipcam_Isp_PubAttr_Get(SENSOR_TYPE_E enSnsType, ISP_PUB_ATTR_S* pstIs
     case SENSOR_SMS_SC1346_1L_60:
         pstIspPubAttr->f32FrameRate = 60;
         break;
+    case SENSOR_OV_OV5647:
+        pstIspPubAttr->f32FrameRate = 15;
+        break;
     default:
         pstIspPubAttr->f32FrameRate = 25;
         break;

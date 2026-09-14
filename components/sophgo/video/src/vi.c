@@ -128,6 +128,10 @@ static int app_ipcam_Vi_Sensor_Start(void) {
         isp_cmos_sensor_image_mode.u16Width  = pstChnCfg->u32Width;
         isp_cmos_sensor_image_mode.u16Height = pstChnCfg->u32Height;
         isp_cmos_sensor_image_mode.f32Fps    = stPubAttr.f32FrameRate;
+        printf("sensor mode %dx%d @ %.1f fps\n",
+               isp_cmos_sensor_image_mode.u16Width,
+               isp_cmos_sensor_image_mode.u16Height,
+               isp_cmos_sensor_image_mode.f32Fps);
         APP_PROF_LOG_PRINT(LEVEL_INFO,
                            "sensor %d, Width %d, Height %d, FPS %f, wdrMode %d, pfnSnsObj %p\n",
                            s32SnsId,
@@ -179,6 +183,12 @@ static int app_ipcam_Vi_Mipi_Start(void) {
             ViPipe             = pstSnsCfg->MipiDev;
             APP_PROF_LOG_PRINT(LEVEL_INFO, "sensor %d devno %d\n", i, ViPipe);
         }
+        combo_dev_attr.img_size.width  = pstChnCfg->u32Width;
+        combo_dev_attr.img_size.height = pstChnCfg->u32Height;
+        printf("MIPI rx %ux%u lanes {%d,%d,%d} hs_settle=%u\n",
+               combo_dev_attr.img_size.width, combo_dev_attr.img_size.height,
+               combo_dev_attr.mipi_attr.lane_id[0], combo_dev_attr.mipi_attr.lane_id[1],
+               combo_dev_attr.mipi_attr.lane_id[2], combo_dev_attr.mipi_attr.dphy.hs_settle);
 
         s32Ret = CVI_MIPI_SetSensorReset(ViPipe, 1);
         APP_IPCAM_CHECK_RET(s32Ret, "CVI_MIPI_SetSensorReset(%d) failed!\n", ViPipe);
@@ -347,7 +357,7 @@ static int app_ipcam_Vi_Chn_Start() {
         stViChnAttr.enCompressMode   = pstChnCfg->enCompressMode;
         stViChnAttr.enPixelFormat    = pstChnCfg->enPixFormat;
 
-        stViChnAttr.u32Depth = 3;  // depth
+        stViChnAttr.u32Depth = 0;  // don't hold VI frames; VPSS/VENC need the VB
         // stViChnAttr.bLVDSflow        = (stViDevAttr.enIntfMode == VI_MODE_LVDS) ? 1 : 0;
         // stViChnAttr.u8TotalChnNum    = vt->ViConfig.s32WorkingViNum;
 

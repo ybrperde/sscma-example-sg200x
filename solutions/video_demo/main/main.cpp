@@ -151,22 +151,22 @@ int main(int argc, char* argv[]) {
     // setupVideo(VIDEO_CH1, &param);
     // registerVideoFrameHandler(VIDEO_CH1, 0, fpSaveVpssFrame, (void*)".nv21");
 
-    // ch2
+    // ch0: H264/RTSP at 5MP (use PHY ch0; ch2 is typically capped ~1080p on CV181x)
 #if 0
     param.format = VIDEO_FORMAT_H264;
-    param.width = 1920;
-    param.height = 1080;
-    param.fps = 30;
-    setupVideo(VIDEO_CH2, &param);
-    registerVideoFrameHandler(VIDEO_CH2, 0, fpSaveVencFrame, NULL);
+    param.width = 2592;
+    param.height = 1944;
+    param.fps = 15;
+    setupVideo(VIDEO_CH0, &param);
+    registerVideoFrameHandler(VIDEO_CH0, 0, fpSaveVencFrame, NULL);
 #else
     param.format = VIDEO_FORMAT_H264;
-    param.width  = 1920;
-    param.height = 1080;
-    param.fps    = 30;
-    setupVideo(VIDEO_CH2, &param);
-    registerVideoFrameHandler(VIDEO_CH2, 0, fpStreamingSendToRtsp, NULL);
-    initRtsp((0x01 << VIDEO_CH2));
+    param.width  = 2592;
+    param.height = 1944;
+    param.fps    = 15;
+    setupVideo(VIDEO_CH0, &param);
+    registerVideoFrameHandler(VIDEO_CH0, 0, fpStreamingSendToRtsp, NULL);
+    initRtsp((0x01 << VIDEO_CH0));
 #endif
 
     startVideo();

@@ -2,6 +2,8 @@
 .vscode
 **/build
 **/install
+!.sdk/**
+!.sdk/**/install/**
 *.a
 *.so
 Dockerfile

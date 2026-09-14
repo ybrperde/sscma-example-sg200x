@@ -139,6 +139,9 @@ int app_ipcam_Sys_Init(void)
     memset(&stVbConf, 0, sizeof(VB_CONFIG_S));
 
     for (unsigned i = 0; i < pattr->vb_pool_num; i++) {
+        if (!pattr->vb_pool[i].bEnable)
+            continue;
+
         uint32_t blk_size = get_frame_size(
                     pattr->vb_pool[i].width,
                     pattr->vb_pool[i].height,
@@ -153,6 +156,8 @@ int app_ipcam_Sys_Init(void)
         stVbConf.astCommPool[i].enRemapMode   = VB_REMAP_MODE_CACHED;
 
         stVbConf.u32MaxPoolCnt++;
+        printf("VB pool[%u] %ux%u BlkSize %u BlkCnt %u\n", i,
+               pattr->vb_pool[i].width, pattr->vb_pool[i].height, blk_size, blk_num);
         APP_PROF_LOG_PRINT(LEVEL_INFO, "VB pool[%d] BlkSize %d BlkCnt %d\n", i, blk_size, blk_num);
     }
 

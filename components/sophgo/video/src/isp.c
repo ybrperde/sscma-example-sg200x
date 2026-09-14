@@ -322,7 +322,8 @@ int app_ipcam_Vi_Isp_Init(void)
         stPubAttr.stWndRect.u32Height = pstChnCfg->u32Height;
         stPubAttr.stSnsSize.u32Width  = pstChnCfg->u32Width;
         stPubAttr.stSnsSize.u32Height = pstChnCfg->u32Height;
-        stPubAttr.f32FrameRate        = pstChnCfg->f32Fps;
+        stPubAttr.f32FrameRate        = (pstChnCfg->f32Fps > 0) ? pstChnCfg->f32Fps
+                                                                : (CVI_FLOAT)pstSnsCfg->s32Framerate;
         stPubAttr.enWDRMode           = pstSnsCfg->enWDRMode;
         s32Ret = CVI_ISP_SetPubAttr(ViPipe, &stPubAttr);
         APP_IPCAM_CHECK_RET(s32Ret, "SetPubAttr fail, ViPipe[%d]\n", ViPipe);
@@ -492,7 +493,9 @@ static void *ISP_Thread(void *arg)
     //     return CVI_NULL;
     // }
 
-    CVI_SYS_RegisterThermalCallback(callback_FPS);
+    // Do not register thermal FPS callback: it SetPubAttr's using the 1080p PQ bin
+    // size and drops 5MP after the SoC warms up.
+    // CVI_SYS_RegisterThermalCallback(callback_FPS);
 
     APP_PROF_LOG_PRINT(LEVEL_INFO, "ISP Dev %d running!\n", ViPipe);
     s32Ret = CVI_ISP_Run(ViPipe);

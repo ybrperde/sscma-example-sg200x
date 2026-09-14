@@ -8,14 +8,14 @@ static const APP_PARAM_VB_CFG_S vbpool = {
     .fmt        = PIXEL_FORMAT_NV21,
     .enBitWidth = DATA_BITWIDTH_8,
     .enCmpMode  = COMPRESS_MODE_NONE,
-    .vb_blk_num = 4,
+    .vb_blk_num = 2,
 };
 
 // VI
 static const APP_PARAM_SNS_CFG_T sns_cfg_ov5647 = {
     .s32SnsId     = 0,
     .enSnsType    = SENSOR_OV_OV5647,
-    .s32Framerate = 30,
+    .s32Framerate = 15,
     .s32BusId     = 2,
     .s32I2cAddr   = 0x36,
     .MipiDev      = 0,
@@ -68,24 +68,24 @@ static const APP_PARAM_DEV_CFG_T dev_cfg = {
 
 static const APP_PARAM_PIPE_CFG_T pipe_cfg = {
     .aPipe          = {0, -1, -1, -1},
-    .enMastPipeMode = VI_OFFLINE_VPSS_OFFLINE,
+    .enMastPipeMode = VI_ONLINE_VPSS_ONLINE,
 };
 
 static const APP_PARAM_CHN_CFG_T chn_cfg = {
     .s32ChnId       = 0,
-    .u32Width       = 1920,
-    .u32Height      = 1080,
-    .f32Fps         = -1,
+    .u32Width       = 2592,
+    .u32Height      = 1944,
+    .f32Fps         = 15,
     .enPixFormat    = PIXEL_FORMAT_NV21,
     .enDynamicRange = DYNAMIC_RANGE_SDR8,
     .enVideoFormat  = VIDEO_FORMAT_LINEAR,
-    .enCompressMode = COMPRESS_MODE_TILE,
+    .enCompressMode = COMPRESS_MODE_NONE,
 };
 
 // VPSS
 static const VPSS_CHN_ATTR_S chn_attr = {
-    .u32Width      = 1920,
-    .u32Height     = 1080,
+    .u32Width      = 2592,
+    .u32Height     = 1944,
     .enVideoFormat = VIDEO_FORMAT_LINEAR,
     .enPixelFormat = PIXEL_FORMAT_NV21,
     .stFrameRate =
@@ -95,7 +95,7 @@ static const VPSS_CHN_ATTR_S chn_attr = {
         },
     .bMirror  = 0,
     .bFlip    = 0,
-    .u32Depth = 3,
+    .u32Depth = 1,
     .stAspectRatio =
         {
             .enMode         = ASPECT_RATIO_AUTO,
@@ -105,8 +105,8 @@ static const VPSS_CHN_ATTR_S chn_attr = {
 };
 
 static const VPSS_GRP_ATTR_S grp_attr = {
-    .u32MaxW       = 1920,
-    .u32MaxH       = 1080,
+    .u32MaxW       = 2592,
+    .u32MaxH       = 1944,
     .enPixelFormat = PIXEL_FORMAT_NV21,
     .stFrameRate =
         {
@@ -156,18 +156,18 @@ static const APP_VENC_CHN_CFG_S venc_h264 = {
     .bEnable          = 0,
     .enType           = PT_H264,
     .u32Duration      = 75,
-    .u32Width         = 1920,
-    .u32Height        = 1080,
+    .u32Width         = 2592,
+    .u32Height        = 1944,
     .u32SrcFrameRate  = -1,
     .u32DstFrameRate  = -1,
-    .u32BitRate       = 1000,
-    .u32MaxBitRate    = 1000,
-    .u32StreamBufSize = (512 << 10),
+    .u32BitRate       = 4000,
+    .u32MaxBitRate    = 4000,
+    .u32StreamBufSize = (1024 << 10),
     .VpssGrp          = 0,
     .VpssChn          = 0,
-    .u32Profile       = 0,
+    .u32Profile       = 2,
     .bSingleCore      = 0,
-    .u32Gop           = 50,
+    .u32Gop           = 15,
     .u32IQp           = 38,
     .u32PQp           = 38,
     .statTime         = 2,
@@ -404,9 +404,9 @@ int app_ipcam_Param_Load(void) {
     for (uint32_t i = 0; i < sys->vb_pool_num; i++) {
         sys->vb_pool[i] = vbpool;
     }
-    sys->stVIVPSSMode.aenMode[0] = VI_OFFLINE_VPSS_ONLINE;
+    sys->stVIVPSSMode.aenMode[0] = VI_ONLINE_VPSS_ONLINE;
     sys->stVPSSMode.enMode       = VPSS_MODE_SINGLE;
-    sys->stVPSSMode.aenInput[0]  = VPSS_INPUT_ISP;  // VPSS_INPUT_MEM;
+    sys->stVPSSMode.aenInput[0]  = VPSS_INPUT_ISP;
     sys->stVPSSMode.aenInput[1]  = VPSS_INPUT_ISP;
     sys->stVPSSMode.ViPipe[0]    = 0;
     sys->stVPSSMode.ViPipe[1]    = 0;

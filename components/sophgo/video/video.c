@@ -17,10 +17,20 @@ static int setVbPool(video_ch_index_t ch, const video_ch_param_t* param) {
     }
 
     APP_PARAM_VB_CFG_S* vb = &sys->vb_pool[ch];
-    vb->bEnable            = 1;
-    vb->width              = param->width;
-    vb->height             = param->height;
-    vb->fmt                = (param->format == VIDEO_FORMAT_RGB888) ? PIXEL_FORMAT_RGB_888 : PIXEL_FORMAT_NV21;
+    APP_PARAM_VI_CTX_S* vi = app_ipcam_Vi_Param_Get();
+    uint32_t width         = param->width;
+    uint32_t height        = param->height;
+
+    /* Offline VI dumps full sensor frames; pool must be at least that size. */
+    if (vi->astChnInfo[0].u32Width > width)
+        width = vi->astChnInfo[0].u32Width;
+    if (vi->astChnInfo[0].u32Height > height)
+        height = vi->astChnInfo[0].u32Height;
+
+    vb->bEnable = 1;
+    vb->width   = width;
+    vb->height  = height;
+    vb->fmt     = (param->format == VIDEO_FORMAT_RGB888) ? PIXEL_FORMAT_RGB_888 : PIXEL_FORMAT_NV21;
 
     return 0;
 }

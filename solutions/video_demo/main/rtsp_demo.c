@@ -207,9 +207,14 @@ int fpStreamingSendToRtsp(void* pData, void* pArgs, void *pUserData)
     }
 
     if ((NULL != prtspCtx->pstServerCtx) && (NULL != prtspCtx->pstSession[idx])) {
+        static uint32_t rtsp_frames;
         s32Ret = CVI_RTSP_WriteFrame(prtspCtx->pstServerCtx, prtspCtx->pstSession[idx]->video, &data);
         if (s32Ret != CVI_SUCCESS) {
             APP_PROF_LOG_PRINT(LEVEL_ERROR, "CVI_RTSP_WriteFrame failed\n");
+        } else if ((rtsp_frames++ % 15) == 0) {
+            printf("rtsp ch%d frames=%u packs=%u len0=%u\n",
+                   VencChn, rtsp_frames, pstStream->u32PackCount,
+                   pstStream->u32PackCount ? (pstStream->pstPack[0].u32Len - pstStream->pstPack[0].u32Offset) : 0);
         }
     }
 
