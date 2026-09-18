@@ -138,6 +138,10 @@ int app_ipcam_Sys_Init(void)
     VB_CONFIG_S      stVbConf;
     memset(&stVbConf, 0, sizeof(VB_CONFIG_S));
 
+    /* CVI_VB_SetConfig requires dense astCommPool[0..n). 1080p stream-only
+     * puts H.264 on CH1 and leaves pool[0] empty. */
+    unsigned packed = 0;
+    APP_PARAM_VPSS_CFG_T* vpss = app_ipcam_Vpss_Param_Get();
     for (unsigned i = 0; i < pattr->vb_pool_num; i++) {
         if (!pattr->vb_pool[i].bEnable)
             continue;
@@ -151,14 +155,24 @@ int app_ipcam_Sys_Init(void)
 
         uint32_t blk_num = pattr->vb_pool[i].vb_blk_num;
 
-        stVbConf.astCommPool[i].u32BlkSize    = blk_size;
-        stVbConf.astCommPool[i].u32BlkCnt     = blk_num;
-        stVbConf.astCommPool[i].enRemapMode   = VB_REMAP_MODE_CACHED;
+        stVbConf.astCommPool[packed].u32BlkSize    = blk_size;
+        stVbConf.astCommPool[packed].u32BlkCnt     = blk_num;
+        stVbConf.astCommPool[packed].enRemapMode   = VB_REMAP_MODE_CACHED;
 
         stVbConf.u32MaxPoolCnt++;
-        printf("VB pool[%u] %ux%u BlkSize %u BlkCnt %u\n", i,
+        if (vpss) {
+            for (unsigned g = 0; g < vpss->u32GrpCnt; g++) {
+                for (unsigned c = 0; c < VPSS_MAX_PHY_CHN_NUM; c++) {
+                    if (vpss->astVpssGrpCfg[g].aAttachPool[c] == i) {
+                        vpss->astVpssGrpCfg[g].aAttachPool[c] = packed;
+                    }
+                }
+            }
+        }
+        printf("VB pool[%u] ch%u %ux%u BlkSize %u BlkCnt %u\n", packed, i,
                pattr->vb_pool[i].width, pattr->vb_pool[i].height, blk_size, blk_num);
-        APP_PROF_LOG_PRINT(LEVEL_INFO, "VB pool[%d] BlkSize %d BlkCnt %d\n", i, blk_size, blk_num);
+        APP_PROF_LOG_PRINT(LEVEL_INFO, "VB pool[%d] BlkSize %d BlkCnt %d\n", packed, blk_size, blk_num);
+        packed++;
     }
 
     CVI_S32 rc = COMM_SYS_Init(&stVbConf);

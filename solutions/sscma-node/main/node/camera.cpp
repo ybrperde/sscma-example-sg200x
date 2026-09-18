@@ -13,11 +13,11 @@ const char* VIDEO_FORMATS[] = {"raw", "jpeg", "h264"};
 #define CAMERA_INIT()                                                                                                                        \
     {                                                                                                                                        \
         Thread::enterCritical();                                                                                                             \
-        Thread::sleep(Tick::fromMilliseconds(100));                                                                                          \
         MA_LOGI(TAG, "start video");                                                                                                         \
         startVideo();                                                                                                                        \
-        Thread::sleep(Tick::fromSeconds(1));                                                                                                 \
+        Thread::sleep(Tick::fromMilliseconds(100));                                                                                          \
         Thread::exitCritical();                                                                                                              \
+        Thread::sleep(Tick::fromSeconds(1));                                                                                                 \
         server_->response(id_, json::object({{"type", MA_MSG_TYPE_RESP}, {"name", "enabled"}, {"code", MA_OK}, {"data", enabled_.load()}})); \
     }
 
@@ -75,18 +75,124 @@ static inline bool isKeyFrame(int format) {
     return isKey;
 }
 
+int CameraNode::hwFromLogical(int logical) const {
+    if (logical == CHN_AUDIO) {
+        return logical;
+    }
+    if (option_ == 3) {
+        switch (logical) {
+            case CHN_H264:
+                return VIDEO_CH0;
+            case CHN_RAW:
+                return VIDEO_CH1;
+            case CHN_JPEG:
+                /* CH0 JPEG/MJPEG bind never emits. 1080p stills worked on CH1 GetChnFrame. */
+                if (jpegOnHwCh1()) {
+                    return VIDEO_CH1;
+                }
+                return VIDEO_CH2;
+            default:
+                return logical;
+        }
+    }
+    /* 1080p JPEG capture worked on CH1. CH0/CH2 H.264 get no frames in this HAL. */
+    if (streamOnlyH264OnCh1()) {
+        switch (logical) {
+            case CHN_H264:
+                return VIDEO_CH1;
+            case CHN_JPEG:
+                return VIDEO_CH2;
+            case CHN_RAW:
+                return VIDEO_CH0;
+            default:
+                return logical;
+        }
+    }
+    return logical;
+}
+
+int CameraNode::logicalFromHw(int hw) const {
+    if (option_ == 3) {
+        switch (hw) {
+            case VIDEO_CH0:
+                return CHN_H264;
+            case VIDEO_CH1:
+                return jpegOnHwCh1() ? CHN_JPEG : CHN_RAW;
+            case VIDEO_CH2:
+                return CHN_JPEG;
+            default:
+                return hw;
+        }
+    }
+    if (streamOnlyH264OnCh1()) {
+        switch (hw) {
+            case VIDEO_CH0:
+                return CHN_RAW;
+            case VIDEO_CH1:
+                return CHN_H264;
+            case VIDEO_CH2:
+                return CHN_JPEG;
+            default:
+                return hw;
+        }
+    }
+    return hw;
+}
+
+bool CameraNode::h264UsesHwCh0() const {
+    return option_ == 3;
+}
+
+bool CameraNode::jpegOnHwCh0() const {
+    /* CH0 JPEG/MJPEG + VPSS bind never produces GetStream on this SoC. */
+    return false;
+}
+
+bool CameraNode::jpegOnHwCh1() const {
+    /* Factory 1080p capture: JPEG on CH1 via GetChnFrame. Only when CH1 is free (no RAW/H.264). */
+    return option_ == 3 && !channels_[CHN_H264].enabled && !channels_[CHN_RAW].enabled;
+}
+
+bool CameraNode::streamOnlyH264OnCh1() const {
+    return option_ != 3 && channels_[CHN_H264].enabled && !channels_[CHN_RAW].enabled;
+}
+
+int CameraNode::channelWidth(int chn) const {
+    if (chn < 0 || chn >= CHN_MAX) {
+        return 0;
+    }
+    return channels_[chn].width;
+}
+
+int CameraNode::channelHeight(int chn) const {
+    if (chn < 0 || chn >= CHN_MAX) {
+        return 0;
+    }
+    return channels_[chn].height;
+}
+
+void CameraNode::sensorSize(int32_t& width, int32_t& height) const {
+    if (option_ == 3) {
+        width  = 2592;
+        height = 1944;
+    } else {
+        width  = 1920;
+        height = 1080;
+    }
+}
+
 int CameraNode::vencCallback(void* pData, void* pArgs) {
 
     APP_DATA_CTX_S* pstDataCtx        = (APP_DATA_CTX_S*)pArgs;
     APP_DATA_PARAM_S* pstDataParam    = &pstDataCtx->stDataParam;
     APP_VENC_CHN_CFG_S* pstVencChnCfg = (APP_VENC_CHN_CFG_S*)pstDataParam->pParam;
-    VENC_CHN VencChn                  = pstVencChnCfg->VencChn;
+    const int chn                     = logicalFromHw(pstVencChnCfg->VencChn);
 
-    if (!started_ || !enabled_ || channels_[VencChn].msgboxes.empty()) {
+    if (chn < 0 || chn >= CHN_MAX) {
+        MA_LOGW(TAG, "invalid chn hw=%d logical=%d", pstVencChnCfg->VencChn, chn);
         return CVI_SUCCESS;
     }
-    if (pstVencChnCfg->VencChn >= CHN_MAX) {
-        MA_LOGW(TAG, "invalid chn %d", pstVencChnCfg->VencChn);
+    if (!started_ || !enabled_ || channels_[chn].msgboxes.empty()) {
         return CVI_SUCCESS;
     }
 
@@ -96,68 +202,101 @@ int CameraNode::vencCallback(void* pData, void* pArgs) {
     for (int i = 0; i < pstStream->u32PackCount; i++) {
         videoFrame* frame = nullptr;
         ppack             = &pstStream->pstPack[i];
-        if (VencChn == CHN_H264 && isKeyFrame(ppack->DataType.enH264EType)) {
+        if (chn == CHN_H264 && isKeyFrame(ppack->DataType.enH264EType)) {
+            /* Group consecutive SPS/PPS/IDR/SEI. Never drop a lone SPS/PPS:
+             * 5MP often emits one NAL per GetStream (video_demo forwards all). */
             int cnt    = 0;
             int offset = 0;
             int size   = 0;
-            for (int j = i; j < pstStream->u32PackCount; j++) {
+            for (int j = i; j < pstStream->u32PackCount && isKeyFrame(pstStream->pstPack[j].DataType.enH264EType); j++) {
                 size += pstStream->pstPack[j].u32Len - pstStream->pstPack[j].u32Offset;
                 cnt++;
-                if (!isKeyFrame(pstStream->pstPack[j].DataType.enH264EType)) {
-                    break;
-                }
             }
-
-            if (cnt == 1) {
-                continue;
-            }
-            if (cnt == 2) {
-                i += 1;
-                cnt = 1;
-            }
-            frame                      = new videoFrame();
-            frame->chn                 = VencChn;
-            frame->timestamp           = Tick::current();
-            frame->img.width           = channels_[VencChn].width;
-            frame->img.height          = channels_[VencChn].height;
-            frame->img.format          = channels_[VencChn].format;
-            frame->img.size            = size;
-            frame->img.key             = true;
-            frame->img.physical        = false;
-            frame->img.data            = new uint8_t[size];
-            frame->fps                 = channels_[VencChn].fps;
-            channels_[VencChn].dropped = false;
+            frame                  = new videoFrame();
+            frame->chn             = chn;
+            frame->timestamp       = Tick::current();
+            frame->img.width       = channels_[chn].width;
+            frame->img.height      = channels_[chn].height;
+            frame->img.format      = channels_[chn].format;
+            frame->img.size        = size;
+            frame->img.key         = true;
+            frame->img.physical    = false;
+            frame->img.data        = new uint8_t[size];
+            frame->fps             = channels_[chn].fps;
+            channels_[chn].dropped = false;
             for (int j = i; j < i + cnt; j++) {
                 memcpy(frame->img.data + offset, pstStream->pstPack[j].pu8Addr + pstStream->pstPack[j].u32Offset, pstStream->pstPack[j].u32Len - pstStream->pstPack[j].u32Offset);
                 frame->blocks.push_back({frame->img.data + offset, pstStream->pstPack[j].u32Len - pstStream->pstPack[j].u32Offset});
                 offset += pstStream->pstPack[j].u32Len - pstStream->pstPack[j].u32Offset;
             }
             i += (cnt - 1);
+        } else if (chn == CHN_JPEG) {
+            int size   = 0;
+            int offset = 0;
+            for (int j = i; j < pstStream->u32PackCount; j++) {
+                size += static_cast<int>(pstStream->pstPack[j].u32Len - pstStream->pstPack[j].u32Offset);
+            }
+            frame               = new videoFrame();
+            frame->chn          = chn;
+            frame->timestamp    = Tick::current();
+            frame->img.width    = channels_[chn].width;
+            frame->img.height   = channels_[chn].height;
+            frame->img.format   = channels_[chn].format;
+            frame->img.size     = size;
+            frame->img.key      = true;
+            frame->img.physical = false;
+            frame->img.data     = new uint8_t[size];
+            frame->fps          = channels_[chn].fps;
+            for (int j = i; j < pstStream->u32PackCount; j++) {
+                const uint32_t n = pstStream->pstPack[j].u32Len - pstStream->pstPack[j].u32Offset;
+                memcpy(frame->img.data + offset, pstStream->pstPack[j].pu8Addr + pstStream->pstPack[j].u32Offset, n);
+                frame->blocks.push_back({frame->img.data + offset, n});
+                offset += static_cast<int>(n);
+            }
+            i = pstStream->u32PackCount - 1;
         } else {
-            if (VencChn == CHN_H264 && channels_[VencChn].dropped) {
+            if (chn == CHN_H264 && channels_[chn].dropped) {
                 continue;
             }
             frame               = new videoFrame();
-            frame->chn          = VencChn;
+            frame->chn          = chn;
             frame->timestamp    = Tick::current();
-            frame->img.width    = channels_[VencChn].width;
-            frame->img.height   = channels_[VencChn].height;
-            frame->img.format   = channels_[VencChn].format;
+            frame->img.width    = channels_[chn].width;
+            frame->img.height   = channels_[chn].height;
+            frame->img.format   = channels_[chn].format;
             frame->img.size     = ppack->u32Len - ppack->u32Offset;
             frame->img.key      = false;
             frame->img.physical = false;
             frame->img.data     = new uint8_t[ppack->u32Len - ppack->u32Offset];
-            frame->fps          = channels_[VencChn].fps;
+            frame->fps          = channels_[chn].fps;
             frame->blocks.push_back({frame->img.data, ppack->u32Len - ppack->u32Offset});
             memcpy(frame->img.data, ppack->pu8Addr + ppack->u32Offset, ppack->u32Len - ppack->u32Offset);
         }
         if (frame != nullptr) {
-            frame->ref(channels_[VencChn].msgboxes.size());
-            for (auto& msgbox : channels_[VencChn].msgboxes) {
-                if (!msgbox->post(frame, Tick::fromMilliseconds(static_cast<int>(1000.0 / channels_[VencChn].fps)))) {
-                    frame->release();
-                    channels_[VencChn].dropped = true;
+            if (chn == CHN_H264) {
+                static uint32_t h264_n;
+                if ((h264_n++ % 15) == 0) {
+                    MA_LOGI(TAG, "h264 n=%u packs=%u nalu=%d len=%u key=%d", h264_n, pstStream->u32PackCount, ppack->DataType.enH264EType, frame->img.size, frame->img.key);
                 }
+            } else if (chn == CHN_JPEG) {
+                static uint32_t jpeg_n;
+                if (jpeg_n < 3 || (jpeg_n % 15) == 0) {
+                    MA_LOGI(TAG, "jpeg n=%u len=%u %dx%d", jpeg_n, frame->img.size, frame->img.width, frame->img.height);
+                }
+                jpeg_n++;
+            }
+            frame->ref(channels_[chn].msgboxes.size());
+            int posted = 0;
+            for (auto& msgbox : channels_[chn].msgboxes) {
+                if (!msgbox->post(frame, Tick::fromMilliseconds(static_cast<int>(1000.0 / channels_[chn].fps)))) {
+                    frame->release();
+                } else {
+                    posted++;
+                }
+            }
+            /* One slow consumer (5MP websocket) must not starve RTSP. */
+            if (posted == 0) {
+                channels_[chn].dropped = true;
             }
         }
     }
@@ -170,28 +309,29 @@ int CameraNode::vpssCallback(void* pData, void* pArgs) {
     APP_VENC_CHN_CFG_S* pstVencChnCfg = (APP_VENC_CHN_CFG_S*)pArgs;
     VIDEO_FRAME_INFO_S* VpssFrame     = (VIDEO_FRAME_INFO_S*)pData;
     VIDEO_FRAME_S* f                  = &VpssFrame->stVFrame;
+    const int chn                     = logicalFromHw(pstVencChnCfg->VencChn);
 
-    if (!started_ || !enabled_ || channels_[pstVencChnCfg->VencChn].msgboxes.empty()) {
+    if (chn < 0 || chn >= CHN_MAX) {
+        MA_LOGW(TAG, "invalid chn hw=%d logical=%d", pstVencChnCfg->VencChn, chn);
         return CVI_SUCCESS;
     }
-    if (pstVencChnCfg->VencChn >= CHN_MAX) {
-        MA_LOGW(TAG, "invalid chn %d", pstVencChnCfg->VencChn);
+    if (!started_ || !enabled_ || channels_[chn].msgboxes.empty()) {
         return CVI_SUCCESS;
     }
 
     videoFrame* frame   = new videoFrame();
-    frame->chn          = pstVencChnCfg->VencChn;
+    frame->chn          = chn;
     frame->img.size     = f->u32Length[0] + f->u32Length[1] + f->u32Length[2];
-    frame->img.width    = channels_[pstVencChnCfg->VencChn].width;
-    frame->img.height   = channels_[pstVencChnCfg->VencChn].height;
-    frame->img.format   = channels_[pstVencChnCfg->VencChn].format;
+    frame->img.width    = channels_[chn].width;
+    frame->img.height   = channels_[chn].height;
+    frame->img.format   = channels_[chn].format;
     frame->img.key      = true;
     frame->img.physical = true;
     frame->img.data     = reinterpret_cast<uint8_t*>(f->u64PhyAddr[0]);
     frame->timestamp    = Tick::current();
-    frame->fps          = channels_[pstVencChnCfg->VencChn].fps;
-    frame->ref(channels_[pstVencChnCfg->VencChn].msgboxes.size());
-    for (auto& msgbox : channels_[pstVencChnCfg->VencChn].msgboxes) {
+    frame->fps          = channels_[chn].fps;
+    frame->ref(channels_[chn].msgboxes.size());
+    for (auto& msgbox : channels_[chn].msgboxes) {
         if (msgbox->isFull() || !msgbox->post(frame, Tick::fromMilliseconds(5))) {
             frame->release();
         }
@@ -395,6 +535,8 @@ ma_err_t CameraNode::onCreate(const json& config) {
             option_ = 1;
         } else if (option.find("360p") != std::string::npos) {
             option_ = 2;
+        } else if (option.find("5mp") != std::string::npos || option.find("5MP") != std::string::npos || option.find("2592") != std::string::npos) {
+            option_ = 3;
         }
     }
 
@@ -470,6 +612,22 @@ ma_err_t CameraNode::onCreate(const json& config) {
             channels_[CHN_JPEG].height = 480;
             channels_[CHN_JPEG].fps    = 30;
             break;
+        case 3:
+            channels_[CHN_H264].format = MA_PIXEL_FORMAT_H264;
+            channels_[CHN_H264].width  = 2592;
+            channels_[CHN_H264].height = 1944;
+            channels_[CHN_H264].fps    = 15;
+            channels_[CHN_JPEG].format = MA_PIXEL_FORMAT_JPEG;
+            /* HW JPEG: 64-align width, max 1920 high. 2560×1920 ≈ 5MP. */
+            channels_[CHN_JPEG].width  = 2560;
+            channels_[CHN_JPEG].height = 1920;
+            channels_[CHN_JPEG].fps    = 15;
+            channels_[CHN_RAW].format  = MA_PIXEL_FORMAT_RGB888;
+            channels_[CHN_RAW].width   = 640;
+            channels_[CHN_RAW].height  = 640;
+            channels_[CHN_RAW].fps     = 15;
+            fps_                       = 15;
+            break;
         default:
             channels_[CHN_H264].format = MA_PIXEL_FORMAT_H264;
             channels_[CHN_H264].width  = 1920;
@@ -482,10 +640,21 @@ ma_err_t CameraNode::onCreate(const json& config) {
             break;
     }
 
+    if (option_ == 3 && fps_ > 15) {
+        fps_ = 15;
+    }
+
     if (fps_ > 0) {
         channels_[CHN_RAW].fps  = fps_;
         channels_[CHN_H264].fps = fps_;
         channels_[CHN_JPEG].fps = fps_;
+    }
+
+    MA_LOGI(TAG, "camera option=%d %dx%d@%d", option_, channels_[CHN_H264].width, channels_[CHN_H264].height, channels_[CHN_H264].fps);
+
+    /* 5MP H.264 on websocket 8080 saturates the socket and used to starve RTSP. */
+    if (option_ == 3 && !config.contains("websocket")) {
+        websocket_ = false;
     }
 
     if (preview_) {
@@ -573,13 +742,12 @@ ma_err_t CameraNode::onControl(const std::string& control, const json& data) {
 }
 
 ma_err_t CameraNode::onDestroy() {
-    Guard guard(mutex_);
+    onStop();
 
+    Guard guard(mutex_);
     if (!created_) {
         return MA_OK;
     }
-
-    onStop();
 
     if (thread_ != nullptr) {
         delete thread_;
@@ -627,6 +795,26 @@ ma_err_t CameraNode::onStart() {
         system("echo 1 > /sys/devices/platform/leds/leds/white/brightness");
     }
 
+    if (option_ == 3) {
+        MA_LOGI(TAG, "5MP sensor output 2592x1944@15 (H264->CH0 RAW->CH1 JPEG->%s)",
+                jpegOnHwCh1() ? "CH1" : "CH2");
+        if (setVideoSensorOutput(2592, 1944, 15.0f) != 0) {
+            MA_LOGE(TAG, "setVideoSensorOutput 5MP failed");
+            return MA_EIO;
+        }
+        for (int i = 0; i < CHN_MAX; i++) {
+            if (i != CHN_AUDIO && channels_[i].fps > 15) {
+                channels_[i].fps = 15;
+            }
+        }
+    } else {
+        const float sns_fps = (fps_ > 0) ? static_cast<float>(fps_) : 30.0f;
+        if (setVideoSensorOutput(1920, 1080, sns_fps) != 0) {
+            MA_LOGE(TAG, "setVideoSensorOutput 1080p failed");
+            return MA_EIO;
+        }
+    }
+
     for (int i = 0; i < CHN_MAX; i++) {
         if (i == CHN_AUDIO) {
             continue;
@@ -654,13 +842,20 @@ ma_err_t CameraNode::onStart() {
         param.width  = channels_[i].width;
         param.height = channels_[i].height;
         param.fps    = channels_[i].fps;
-        MA_LOGI(TAG, "start channel %d format %d width %d height %d fps %d", i, param.format, param.width, param.height, param.fps);
+        const int hw = hwFromLogical(i);
+        MA_LOGI(TAG, "start channel logical=%d hw=%d format %d width %d height %d fps %d enabled=%d", i, hw, param.format, param.width, param.height, param.fps, channels_[i].enabled);
         if (channels_[i].enabled) {
-            setupVideo(static_cast<video_ch_index_t>(i), &param);
+            if (i == CHN_H264 && streamOnlyH264OnCh1()) {
+                MA_LOGI(TAG, "1080p stream: H.264 on hw CH1 (GetChnFrame)");
+            }
+            if (i == CHN_JPEG && jpegOnHwCh1()) {
+                MA_LOGI(TAG, "5MP stills: JPEG on hw CH1 (GetChnFrame)");
+            }
+            setupVideo(static_cast<video_ch_index_t>(hw), &param);
             if (i == CHN_RAW) {
-                registerVideoFrameHandler(static_cast<video_ch_index_t>(i), 0, vpssCallbackStub, this);
+                registerVideoFrameHandler(static_cast<video_ch_index_t>(hw), 0, vpssCallbackStub, this);
             } else {
-                registerVideoFrameHandler(static_cast<video_ch_index_t>(i), 0, vencCallbackStub, this);
+                registerVideoFrameHandler(static_cast<video_ch_index_t>(hw), 0, vencCallbackStub, this);
             }
         }
     }
@@ -680,21 +875,25 @@ ma_err_t CameraNode::onStart() {
 }
 
 ma_err_t CameraNode::onStop() {
-    Guard guard(mutex_);
-    if (!started_) {
-        return MA_OK;
-    }
-    if (preview_) {
-        detach(CHN_JPEG, &frame_);
-    }
-    started_ = false;
+    {
+        Guard guard(mutex_);
+        if (!started_) {
+            return MA_OK;
+        }
+        if (preview_) {
+            detach(CHN_JPEG, &frame_);
+        }
+        started_ = false;
 
-    if (thread_ != nullptr) {
-        thread_->join();
+        if (thread_ != nullptr) {
+            thread_->join();
+        }
+        if (audio_ && thread_audio_ != nullptr) {
+            thread_audio_->join();
+        }
     }
-    if (audio_ && thread_audio_ != nullptr) {
-        thread_audio_->join();
-    }
+    /* Release the camera mutex before tearing VI down so the venc thread
+     * can finish its last callback instead of deadlocking the join. */
     CAMERA_DEINIT();
     return MA_OK;
 }
@@ -707,8 +906,32 @@ ma_err_t CameraNode::config(int chn, int32_t width, int32_t height, int32_t fps,
     // if (channels_[chn].configured) {
     //     return MA_EBUSY;
     // }
-    channels_[chn].width      = width > 0 ? width : channels_[chn].width;
-    channels_[chn].height     = height > 0 ? height : channels_[chn].height;
+    if (option_ == 3 && fps > 15) {
+        fps = 15;
+    }
+    int32_t out_w = width > 0 ? width : channels_[chn].width;
+    int32_t out_h = height > 0 ? height : channels_[chn].height;
+    /* 5MP stills go on CH0 (2592×1920 JPEG; HW max height 1920). CH2 cannot do 5MP. */
+    if (option_ == 3 && chn == CHN_JPEG && out_w > 0 && out_h > 0) {
+        if (channels_[CHN_H264].enabled) {
+            const int64_t pixels = static_cast<int64_t>(out_w) * out_h;
+            if (out_w > 1920 || out_h > 1080 || pixels > 1920 * 1080) {
+                MA_LOGW(TAG, "5MP JPEG %dx%d with H.264: CH2 cap, clamping to 1920x1080", out_w, out_h);
+                out_w = 1920;
+                out_h = 1080;
+            }
+        } else if (out_h > 1920 || (out_w % 64) != 0) {
+            if (out_w % 64) {
+                out_w = out_w & ~63;
+            }
+            if (out_h > 1920) {
+                out_h = 1920;
+            }
+            MA_LOGW(TAG, "5MP JPEG aligned to %dx%d", out_w, out_h);
+        }
+    }
+    channels_[chn].width      = out_w;
+    channels_[chn].height     = out_h;
     channels_[chn].fps        = fps > 0 ? fps : channels_[chn].fps;
     channels_[chn].format     = format != MA_PIXEL_FORMAT_UNKNOWN ? format : channels_[chn].format;
     channels_[chn].enabled    = enabled;

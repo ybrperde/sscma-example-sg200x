@@ -44,6 +44,8 @@ typedef struct {
 int initVideo(void);
 int deinitVideo(void);
 int startVideo();
+/* VI/ISP/VPSS sensor output. After initVideo(), before setupVideo()/startVideo(). */
+int setVideoSensorOutput(uint32_t width, uint32_t height, float fps);
 int setVideoMirror(bool mirror);
 int setVideoFlip(bool flip);
 int getVideoMirror();

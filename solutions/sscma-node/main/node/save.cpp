@@ -457,8 +457,12 @@ void SaveNode::threadEntry() {
 
                 if (duration_ == 0) {
                     if (manual_capture_requested_) {
-                        shouldSave                = true;
-                        manual_capture_requested_ = false;
+                        if (video->img.size < 120 * 1024) {
+                            MA_LOGW(TAG, "skip thin JPEG %u bytes (AE settling)", video->img.size);
+                        } else {
+                            shouldSave                = true;
+                            manual_capture_requested_ = false;
+                        }
                     }
                 } else {
                     if (slice_ > 0 && Tick::current() - start_ > Tick::fromSeconds(slice_)) {
@@ -621,6 +625,8 @@ void SaveNode::threadEntry() {
                 }
             }
             frame->release();
+        } else if (saveMode_ == "image" && duration_ == 0 && manual_capture_requested_) {
+            MA_LOGW(TAG, "capture pending: no JPEG frame in 2s (encoder idle?)");
         }
     }
 }
@@ -762,9 +768,13 @@ ma_err_t SaveNode::onStart() {
     }
 
     if (saveMode_ == "image") {
-        camera_->config(CHN_JPEG);
+        if (camera_->option() == 3) {
+            camera_->config(CHN_JPEG, 2560, 1920, 15, MA_PIXEL_FORMAT_JPEG);
+        } else {
+            camera_->config(CHN_JPEG);
+        }
         camera_->attach(CHN_JPEG, &frame_);
-        MA_LOGI(TAG, "attached to JPEG channel for image saving (using model's configuration)");
+        MA_LOGI(TAG, "attached to JPEG channel for image saving %dx%d", camera_->channelWidth(CHN_JPEG), camera_->channelHeight(CHN_JPEG));
     } else {
         camera_->config(CHN_H264);
         camera_->attach(CHN_H264, &frame_);

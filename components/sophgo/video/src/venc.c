@@ -369,7 +369,7 @@ static int app_ipcam_Venc_Chn_Attr_Set(VENC_ATTR_S *pstVencAttr, APP_VENC_CHN_CF
 
         pstJpegAttr->bSupportDCF = CVI_FALSE;
         pstJpegAttr->stMPFCfg.u8LargeThumbNailNum = 0;
-        pstJpegAttr->enReceiveMode = VENC_PIC_RECEIVE_SINGLE;
+        pstJpegAttr->enReceiveMode = VENC_PIC_RECEIVE_MULTI;
     }
 
     return CVI_SUCCESS;
@@ -948,6 +948,7 @@ static void* Thread_Streaming_Proc(void* pArgs)
                        VencChn, venc_to, stViStat.u32RecvPic, stViStat.u32IntCnt,
                        stViStat.u32LostFrame, stViStat.u32VbFail, stViStat.u32FrameRate,
                        stViStat.stSize.u32Width, stViStat.stSize.u32Height);
+                fflush(stdout);
             }
             continue;
         }
@@ -1077,7 +1078,10 @@ int app_ipcam_Venc_Init(APP_VENC_CHN_E VencIdx)
             APP_PROF_LOG_PRINT(LEVEL_ERROR,"CVI_VENC_CreateChn [%d] failed with 0x%x\n", VencChn, s32Ret);
             goto VENC_EXIT1;
         }
-        APP_PROF_LOG_PRINT(LEVEL_WARN, "venc_%d CVI_VENC_CreateChn takes %u ms \n", VencChn, (GetCurTimeInMsec() - iTime));
+        printf("venc ch%d CreateChn type=%d %ux%u ok (%u ms)\n",
+               VencChn, enCodecType, pstVencChnCfg->u32Width, pstVencChnCfg->u32Height,
+               (GetCurTimeInMsec() - iTime));
+        fflush(stdout);
 
         if ((enCodecType == PT_H265) || (enCodecType == PT_H264)) {
             if (enCodecType == PT_H264)

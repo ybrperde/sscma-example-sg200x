@@ -12,9 +12,17 @@ namespace ma::node {
 static constexpr char TAG[] = "ma::node::server";
 
 void NodeServer::onConnect(struct mosquitto* mosq, int rc) {
-    std::string topic = m_topic_in_prefix + "/+";
+    if (rc != 0) {
+        MA_LOGE(TAG, "mqtt connect failed rc=%d", rc);
+        m_connected.store(false);
+        return;
+    }
+    // in/# covers in, in/ (health/clear) and in/<node_id>. in/+ misses the
+    // empty last level on some mosquitto builds, which drops supervisor health.
+    const std::string wildcard = m_topic_in_prefix + "/#";
     mosquitto_subscribe(mosq, NULL, m_topic_in_prefix.c_str(), 0);
-    mosquitto_subscribe(mosq, NULL, topic.c_str(), 0);
+    mosquitto_subscribe(mosq, NULL, (m_topic_in_prefix + "/+").c_str(), 0);
+    mosquitto_subscribe(mosq, NULL, wildcard.c_str(), 0);
     m_connected.store(true);
     MA_LOGI(TAG, "node server connected");
     response("", json::object({{"type", MA_MSG_TYPE_RESP}, {"name", "node"}, {"code", MA_OK}, {"data", ""}}));
@@ -22,21 +30,40 @@ void NodeServer::onConnect(struct mosquitto* mosq, int rc) {
 
 void NodeServer::onDisconnect(struct mosquitto* mosq, int rc) {
     m_connected.store(false);
+    MA_LOGE(TAG, "node server disconnected rc=%d (another client id '%s'?)", rc, m_client_id.c_str());
 }
 
 void NodeServer::onMessage(struct mosquitto* mosq, const struct mosquitto_message* msg) {
-    std::string topic = msg->topic;
+    std::string topic = msg->topic ? msg->topic : "";
     std::string id    = "";
     Exception e(MA_OK, "");
     json payload;
     MA_TRY {
-        id      = topic.substr(m_topic_in_prefix.length() + 1);
-        payload = json::parse(static_cast<const char*>(msg->payload), nullptr, false);
+        if (topic.size() > m_topic_in_prefix.size() && topic.compare(0, m_topic_in_prefix.size(), m_topic_in_prefix) == 0 &&
+            topic[m_topic_in_prefix.size()] == '/') {
+            id = topic.substr(m_topic_in_prefix.size() + 1);
+        }
+        const char* begin = static_cast<const char*>(msg->payload);
+        const int len     = msg->payloadlen;
+        if (!begin || len <= 0) {
+            e = Exception(MA_EINVAL, "Invalid payload");
+            MA_THROW(e);
+        }
+        payload = json::parse(std::string(begin, static_cast<size_t>(len)), nullptr, false);
         if (payload.is_discarded() || !payload.contains("name") || !payload.contains("data")) {
             e = Exception(MA_EINVAL, "Invalid payload");
             MA_THROW(e);
         }
-        MA_LOGV(TAG, "request: %s <== %s", id.c_str(), payload.dump().c_str());
+        MA_LOGI(TAG, "request: '%s' <== %s", id.c_str(), payload.dump().c_str());
+        std::string name = payload["name"].get<std::string>();
+        std::transform(name.begin(), name.end(), name.begin(), ::tolower);
+        // Health must not wait on the executor: CAMERA_INIT can block it longer
+        // than the supervisor mosquitto_rr 3s window, which then restarts S91
+        // and steals MQTT client id recamera from a foreground --start.
+        if (name == "health") {
+            this->response(id, json::object({{"type", MA_MSG_TYPE_RESP}, {"name", name}, {"code", MA_OK}, {"data", ""}}));
+            return;
+        }
         m_executor.submit([this, id = std::move(id), payload = std::move(payload)]() -> bool {
             Exception e(MA_OK, "");
             std::string name = payload["name"].get<std::string>();
@@ -123,9 +150,12 @@ void NodeServer::response(const std::string& id, const json& msg) {
     }
     // Guard guard(m_mutex);
     std::string topic = m_topic_out_prefix + '/' + id;
-    MA_LOGV(TAG, "response: %s ==> %s", id.c_str(), msg.dump().c_str());
-    int mid = mosquitto_publish(m_client, nullptr, topic.c_str(), msg.dump().size(), msg.dump().data(), 0, false);
-    return;
+    const std::string body = msg.dump();
+    MA_LOGI(TAG, "response: '%s' ==> %s", id.c_str(), body.c_str());
+    int rc = mosquitto_publish(m_client, nullptr, topic.c_str(), static_cast<int>(body.size()), body.data(), 0, false);
+    if (rc != MOSQ_ERR_SUCCESS) {
+        MA_LOGE(TAG, "mqtt publish %s failed rc=%d", topic.c_str(), rc);
+    }
 }
 
 void NodeServer::setStorage(StorageFile* storage) {

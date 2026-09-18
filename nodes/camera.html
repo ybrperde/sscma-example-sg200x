@@ -1,0 +1,218 @@
+<script type="text/html" data-template-name="camera">
+    <div class="form-row">
+        <label for="node-input-name">
+            <i class="fa fa-tag"></i>
+            Label
+        </label>
+        <input type="text" id="node-input-name" />
+    </div>
+    <div class="form-row">
+        <label for="node-input-client">
+            <i class="fa fa-globe"></i>
+            Client
+        </label>
+        <input type="text" id="node-input-client" />
+    </div>
+    <div class="form-row">
+        <label for="node-input-audio">
+            <i class="fa fa-microphone"></i>
+            Audio
+        </label>
+        <input type="checkbox" id="node-input-audio" style="width:auto; margin-top: 0;" />
+    </div>
+    <div class="form-row">
+        <label for="node-input-volume">
+            <i class="fa fa-sliders"></i>
+            Volume
+        </label>
+        <input type="range" id="node-input-volume" min="0" max="100" step="1" value="80" style="width: 60%;" />
+        <span id="volume-value"></span>
+    </div>
+
+    <div class="form-row">
+        <label for="node-input-option">
+            <i class="fa fa-expand"></i>
+            Resolution
+        </label>
+        <select id="node-input-option" style="width: 50%;">
+            <option value="2">640x480 (480p)</option>
+            <option value="1">1280x720 (720p)</option>
+            <option value="0" selected>1920x1080 (1080p)</option>
+            <option value="3">2592x1944 (5MP) @ 15fps</option>
+        </select>
+    </div>
+
+    <div class="form-row">
+        <label for="node-input-fps">
+            <i class="fa fa-clock-o"></i>
+            FPS
+        </label>
+        <select id="node-input-fps" style="width: 50%;">
+            <option value="5">5 FPS</option>
+            <option value="10">10 FPS</option>
+            <option value="15">15 FPS</option>
+            <option value="30" selected>30 FPS</option>
+        </select>
+    </div>
+
+    <div class="form-row">
+        <label for="node-input-mirror">
+            <i class="fa fa-pause"></i>
+            Mirror
+        </label>
+        <input type="checkbox" id="node-input-mirror" style="width:auto; margin-top: 0;" />
+        <span style="margin-left: 8px;">Horizontal flip (mirror effect)</span>
+    </div>
+
+    <div class="form-row">
+        <label for="node-input-flip">
+            <i class="fa fa-refresh"></i>
+            Flip
+        </label>
+        <input type="checkbox" id="node-input-flip" style="width:auto; margin-top: 0;" />
+        <span style="margin-left: 8px;">Vertical flip</span>
+    </div>
+</script>
+
+<script type="text/javascript">
+    RED.nodes.registerType("camera", {
+        category: "Vision AI",
+        color: "#B29DDC",
+        defaults: {
+            name: { value: "" },
+            client: { type: "sscma", required: true, label: RED._("sscma") },
+            audio: { value: true },
+            volume: { value: 80 },
+            option: { value: 0 },
+            fps: { value: 30 },
+            mirror: { value: false }, // Add mirror default
+            flip: { value: false }, // Add flip default
+        },
+        inputs: 1,
+        outputs: 1,
+        icon: "font-awesome/fa-camera",
+        label: function () {
+            return this.name || "camera";
+        },
+        oneditprepare: function () {
+            var volInput = document.getElementById("node-input-volume");
+            var audioInput = document.getElementById("node-input-audio");
+            var volValue = document.getElementById("volume-value");
+            var mirrorInput = document.getElementById("node-input-mirror");
+            var flipInput = document.getElementById("node-input-flip");
+            var optionInput = document.getElementById("node-input-option");
+            var fpsInput = document.getElementById("node-input-fps");
+
+            // Restore existing values
+            audioInput.checked = this.audio;
+            volInput.value = this.volume;
+            volValue.textContent = volInput.value;
+            mirrorInput.checked = this.mirror === true; // default to false
+            flipInput.checked = this.flip === true; // default to false
+
+            // Ensure selects show sensible defaults if value is missing/invalid
+            var optionVal = String(this.option);
+            var validoption = ["0", "1", "2", "3"]; // 1080p/720p/480p/5MP
+            if (!validoption.includes(optionVal)) {
+                optionVal = "0"; // default 1080p
+            }
+            optionInput.value = optionVal;
+
+            var savedFps = String(this.fps);
+            function applyFpsForOption() {
+                var fpsVal = String(fpsInput.value || savedFps);
+                var validFps = ["5", "10", "15", "30"];
+                if (!validFps.includes(fpsVal)) {
+                    fpsVal = "30";
+                }
+                var opt30 = fpsInput.querySelector('option[value="30"]');
+                if (optionInput.value === "3") {
+                    if (parseInt(fpsVal, 10) > 15) {
+                        fpsVal = "15";
+                    }
+                    if (opt30) {
+                        opt30.disabled = true;
+                    }
+                } else if (opt30) {
+                    opt30.disabled = false;
+                }
+                fpsInput.value = fpsVal;
+            }
+
+            applyFpsForOption();
+            optionInput.addEventListener("change", applyFpsForOption);
+
+            // Disable volume if audio is off
+            if (!audioInput.checked) {
+                volInput.disabled = true;
+                volValue.disabled = true;
+            }
+
+            // Update volume display
+            volInput.addEventListener("input", function () {
+                volValue.textContent = volInput.value;
+            });
+
+            // Toggle volume controls based on audio checkbox
+            audioInput.addEventListener("change", function () {
+                if (audioInput.checked) {
+                    volInput.disabled = false;
+                    volValue.disabled = false;
+                } else {
+                    volInput.disabled = true;
+                    volValue.disabled = true;
+                }
+            });
+
+            // Mirror and Flip don't need extra logic, just pass values
+        },
+    });
+
+    // Prevent multiple instances
+    RED.events.on("nodes:add", function (node) {
+        const existingNodes = RED.nodes.filterNodes({ type: "camera" });
+        if (existingNodes.length > 1) {
+            RED.notify("This node can only be instantiated once.", "error");
+            RED.nodes.remove(node.id);
+        }
+    });
+</script>
+
+<script type="text/markdown" data-help-name="camera">
+This is the `camera node` for Seeed SenseCraft Model Assistant hardwares such as reCamera or Pi camera.
+
+### Input
+
+-   Send `msg.enabled = true` (boolean) to start the camera, and `msg.enabled = false` (boolean) to stop it.
+
+### Output
+
+#### AI Detection
+
+-   Connect with a `model` node to run AI inference using models like YOLOv5, YOLOv8, YOLO11, etc.
+
+#### Preview
+
+-   Connect with a `preview` node to view the camera feed.
+
+#### Streaming
+
+-   Connect with a `stream` node to enable RTSP streaming.
+
+#### Save
+
+-   Connect with a `save` node to capture and save images or video.
+
+### Configuration option
+
+-   **Audio**: Enable or disable audio capture.
+-   **Volume**: Adjust microphone volume (0–100).
+-   **Resolution**: 1080p / 720p / 480p / **2592×1944 (5MP)**. 5MP stills (`save` image) are 2592×1944. RTSP is also 5MP. If camera+stream+save run together, the still drops to 1080p (CH0 is the H.264 5MP pipe). AI still uses the model input size (e.g. 640×640), not 5MP RAW. Overlay JPEG stays 640×640.
+-   **FPS**: 5/10/15/30. 5MP is locked to 15 (sensor mode).
+-   **Mirror**: Horizontally flip the image (useful for selfie-style view).
+-   **Flip**: Vertically flip the image.
+
+> Note: These settings can also be overridden by sending `msg.mirror` or `msg.flip` in the input message.
+
+More info: [https://github.com/Seeed-Studio/ModelAssistant](https://github.com/Seeed-Studio/ModelAssistant)
+</script>

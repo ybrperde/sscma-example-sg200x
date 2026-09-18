@@ -1,5 +1,8 @@
 #include <unistd.h>
 
+#include <algorithm>
+#include <cmath>
+
 #include <opencv2/opencv.hpp>
 namespace cv2 = cv;
 
@@ -11,6 +14,45 @@ using namespace ma::engine;
 using namespace ma::model;
 
 static constexpr char TAG[] = "ma::node::model";
+
+/* VPSS ASPECT_RATIO_AUTO: scale source into dest, pad the leftover. Boxes are
+ * normalized in the square tensor; overlay dest is JPEG preview (or RAW). */
+struct OverlayMap {
+    float ax, bx, ay, by;
+};
+
+static OverlayMap makeLetterboxMap(int src_w, int src_h, int tensor_w, int tensor_h, int dest_w, int dest_h) {
+    auto fit = [](int sw, int sh, int dw, int dh) {
+        const float s  = std::min(dw / static_cast<float>(sw), dh / static_cast<float>(sh));
+        const float px = (dw - sw * s) * 0.5f;
+        const float py = (dh - sh * s) * 0.5f;
+        return OverlayMap{s, px, s, py};
+    };
+    if (src_w <= 0 || src_h <= 0 || tensor_w <= 0 || tensor_h <= 0 || dest_w <= 0 || dest_h <= 0) {
+        return {1.f, 0.f, 1.f, 0.f};
+    }
+    const OverlayMap t = fit(src_w, src_h, tensor_w, tensor_h);
+    const OverlayMap d = fit(src_w, src_h, dest_w, dest_h);
+    const float st     = (t.ax > 0.f) ? t.ax : 1.f;
+    const float k      = d.ax / st;
+    return {k, d.bx - t.bx * k, k, d.by - t.by * k};
+}
+
+static int16_t mapPxX(const OverlayMap& m, float nx, int tensor_w) {
+    return static_cast<int16_t>(std::lround(nx * tensor_w * m.ax + m.bx));
+}
+
+static int16_t mapPxY(const OverlayMap& m, float ny, int tensor_h) {
+    return static_cast<int16_t>(std::lround(ny * tensor_h * m.ay + m.by));
+}
+
+static int16_t mapPxW(const OverlayMap& m, float nw, int tensor_w) {
+    return static_cast<int16_t>(std::lround(nw * tensor_w * m.ax));
+}
+
+static int16_t mapPxH(const OverlayMap& m, float nh, int tensor_h) {
+    return static_cast<int16_t>(std::lround(nh * tensor_h * m.ay));
+}
 
 #define DEFAULT_MODEL "/userdata/Models/model.cvimodel"
 
@@ -40,13 +82,11 @@ ModelNode::~ModelNode() {
 }
 void ModelNode::threadEntry() {
 
-    ma_err_t err          = MA_OK;
-    videoFrame* raw       = nullptr;
-    videoFrame* jpeg      = nullptr;
-    int32_t width         = 0;
-    int32_t height        = 0;
-    int32_t target_width  = 0;
-    int32_t target_height = 0;
+    ma_err_t err    = MA_OK;
+    videoFrame* raw  = nullptr;
+    videoFrame* jpeg = nullptr;
+    int32_t width    = 0;
+    int32_t height   = 0;
     std::vector<std::string> labels;
 
     server_->response(id_, json::object({{"type", MA_MSG_TYPE_RESP}, {"name", "enabled"}, {"code", MA_OK}, {"data", enabled_.load()}}));
@@ -73,31 +113,34 @@ void ModelNode::threadEntry() {
 
         ma_tick_t start = Tick::current();
 
-        json reply       = json::object({{"type", MA_MSG_TYPE_EVT}, {"name", "invoke"}, {"code", MA_OK}, {"data", {{"count", ++count_}}}});
-        float scale_h    = 1.0;
-        float scale_w    = 1.0;
-        int32_t offset_x = 0;
-        int32_t offset_y = 0;
+        json reply = json::object({{"type", MA_MSG_TYPE_EVT}, {"name", "invoke"}, {"code", MA_OK}, {"data", {{"count", ++count_}}}});
         if (debug_) {
             width  = jpeg->img.width;
             height = jpeg->img.height;
+        } else if (camera_ != nullptr && camera_->option() == 3) {
+            /* No preview JPEG: emit boxes in H.264 / RTSP space (2592×1944). */
+            width  = camera_->channelWidth(CHN_H264);
+            height = camera_->channelHeight(CHN_H264);
         } else {
             width  = raw->img.width;
             height = raw->img.height;
         }
 
-        if (width > height) {
-            scale_h  = (float)width / (float)height;
-            offset_y = (height - width) / 2;
-        } else {
-            scale_w  = (float)height / (float)width;
-            offset_x = (width - height) / 2;
+        const int32_t tensor_w = raw->img.width;
+        const int32_t tensor_h = raw->img.height;
+        int32_t src_w          = tensor_w;
+        int32_t src_h          = tensor_h;
+        int32_t stream_w       = width;
+        int32_t stream_h       = height;
+        if (camera_ != nullptr) {
+            camera_->sensorSize(src_w, src_h);
+            stream_w = camera_->channelWidth(CHN_H264);
+            stream_h = camera_->channelHeight(CHN_H264);
         }
+        const OverlayMap overlay = makeLetterboxMap(src_w, src_h, tensor_w, tensor_h, width, height);
 
-        target_width  = width * scale_w;
-        target_height = height * scale_h;
-
-        reply["data"]["resolution"] = json::array({width, height});
+        reply["data"]["resolution"]        = json::array({width, height});
+        reply["data"]["stream_resolution"] = json::array({stream_w, stream_h});
 
         ma_tensor_t tensor = {
             .size        = raw->img.size,
@@ -123,10 +166,10 @@ void ModelNode::threadEntry() {
                 auto tracks             = tracker_.inplace_update(_bboxes);
                 reply["data"]["tracks"] = tracks;
                 for (int i = 0; i < _bboxes.size(); i++) {
-                    reply["data"]["boxes"].push_back({static_cast<int16_t>(_bboxes[i].x * target_width + offset_x),
-                                                      static_cast<int16_t>(_bboxes[i].y * target_height + offset_y),
-                                                      static_cast<int16_t>(_bboxes[i].w * target_width),
-                                                      static_cast<int16_t>(_bboxes[i].h * target_height),
+                    reply["data"]["boxes"].push_back({mapPxX(overlay, _bboxes[i].x, tensor_w),
+                                                      mapPxY(overlay, _bboxes[i].y, tensor_h),
+                                                      mapPxW(overlay, _bboxes[i].w, tensor_w),
+                                                      mapPxH(overlay, _bboxes[i].h, tensor_h),
                                                       static_cast<int8_t>(_bboxes[i].score * 100),
                                                       _bboxes[i].target});
                     if (labels_.size() > _bboxes[i].target) {
@@ -143,10 +186,10 @@ void ModelNode::threadEntry() {
                 }
             } else {
                 for (int i = 0; i < _bboxes.size(); i++) {
-                    reply["data"]["boxes"].push_back({static_cast<int16_t>(_bboxes[i].x * target_width + offset_x),
-                                                      static_cast<int16_t>(_bboxes[i].y * target_height + offset_y),
-                                                      static_cast<int16_t>(_bboxes[i].w * target_width),
-                                                      static_cast<int16_t>(_bboxes[i].h * target_height),
+                    reply["data"]["boxes"].push_back({mapPxX(overlay, _bboxes[i].x, tensor_w),
+                                                      mapPxY(overlay, _bboxes[i].y, tensor_h),
+                                                      mapPxW(overlay, _bboxes[i].w, tensor_w),
+                                                      mapPxH(overlay, _bboxes[i].h, tensor_h),
                                                       static_cast<int8_t>(_bboxes[i].score * 100),
                                                       _bboxes[i].target});
                     if (labels_.size() > _bboxes[i].target) {
@@ -182,12 +225,12 @@ void ModelNode::threadEntry() {
             for (auto& result : _results) {
                 json pts = json::array();
                 for (auto& pt : result.pts) {
-                    pts.push_back({static_cast<int16_t>(pt.x * target_width + offset_x), static_cast<int16_t>(pt.y * target_height + offset_y), static_cast<int8_t>(pt.z * 100)});
+                    pts.push_back({mapPxX(overlay, pt.x, tensor_w), mapPxY(overlay, pt.y, tensor_h), static_cast<int8_t>(pt.z * 100)});
                 }
-                json box = {static_cast<int16_t>(result.box.x * target_width + offset_x),
-                            static_cast<int16_t>(result.box.y * target_height + offset_y),
-                            static_cast<int16_t>(result.box.w * target_width),
-                            static_cast<int16_t>(result.box.h * target_height),
+                json box = {mapPxX(overlay, result.box.x, tensor_w),
+                            mapPxY(overlay, result.box.y, tensor_h),
+                            mapPxW(overlay, result.box.w, tensor_w),
+                            mapPxH(overlay, result.box.h, tensor_h),
                             static_cast<int8_t>(result.box.score * 100),
                             result.box.target};
                 if (labels_.size() > result.box.target) {
@@ -203,10 +246,10 @@ void ModelNode::threadEntry() {
             auto _results             = segmentor->getResults();
             reply["data"]["segments"] = json::array();
             for (auto& result : _results) {
-                json box = {static_cast<int16_t>(result.box.x * target_width + offset_x),
-                            static_cast<int16_t>(result.box.y * target_height + offset_y),
-                            static_cast<int16_t>(result.box.w * target_width),
-                            static_cast<int16_t>(result.box.h * target_height),
+                json box = {mapPxX(overlay, result.box.x, tensor_w),
+                            mapPxY(overlay, result.box.y, tensor_h),
+                            mapPxW(overlay, result.box.w, tensor_w),
+                            mapPxH(overlay, result.box.h, tensor_h),
                             static_cast<int8_t>(result.box.score * 100),
                             result.box.target};
                 if (labels_.size() > result.box.target) {
@@ -234,11 +277,11 @@ void ModelNode::threadEntry() {
                 std::vector<uint16_t> contour;
                 if (maxContour != contours.end()) {
                     contour.reserve(maxContour->size() * 2);
-                    float w_scale = width * scale_w / result.mask.width;
-                    float h_scale = target_height / result.mask.height;
+                    const float inv_mw = (result.mask.width > 0) ? (1.f / result.mask.width) : 0.f;
+                    const float inv_mh = (result.mask.height > 0) ? (1.f / result.mask.height) : 0.f;
                     for (auto& c : *maxContour) {
-                        contour.push_back(static_cast<uint16_t>(c.x * w_scale + offset_x));
-                        contour.push_back(static_cast<uint16_t>(c.y * h_scale + offset_y));
+                        contour.push_back(static_cast<uint16_t>(mapPxX(overlay, c.x * inv_mw, tensor_w)));
+                        contour.push_back(static_cast<uint16_t>(mapPxY(overlay, c.y * inv_mh, tensor_h)));
                     }
                 }
                 reply["data"]["segments"].push_back({box, contour});
@@ -555,8 +598,20 @@ ma_err_t ModelNode::onStart() {
             preview_width_  = img->width;
             preview_height_ = img->height;
         }
+        if (camera_->option() == 3) {
+            if (preview_fps_ > 15) {
+                preview_fps_ = 15;
+            }
+            const int64_t pixels = static_cast<int64_t>(preview_width_) * preview_height_;
+            if (preview_width_ >= 2592 || preview_height_ >= 1944 || pixels > 1280 * 960) {
+                MA_LOGW(TAG, "5MP JPEG preview %dx%d too large, using 640x640", preview_width_, preview_height_);
+                preview_width_  = 640;
+                preview_height_ = 640;
+            }
+        }
         camera_->config(CHN_JPEG, preview_width_, preview_height_, preview_fps_, MA_PIXEL_FORMAT_JPEG);
         camera_->attach(CHN_JPEG, &jpeg_frame_);
+        MA_LOGI(TAG, "overlay jpeg %dx%d@%d camera_option=%d", preview_width_, preview_height_, preview_fps_, camera_->option());
     }
 
     MA_LOGI(TAG, "start model: %s(%s)", type_.c_str(), id_.c_str());

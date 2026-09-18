@@ -136,9 +136,19 @@ Send a request via the `in` topic, with `node_id` as the unique identifier.
 #### Request Parameters
 | Parameter | Type | Description |
 |---|---|---|
-| option | int | Enumerated value |
+| option | int or string | Enumerated resolution (see table below) |
+| fps | int | Requested FPS (1–30). Mode `3` (5MP) is capped at 15. |
 | audio | bool:true | Whether to enable audio recording |
 | preview | bool:false | Whether to enable preview |
+
+`option` values:
+
+| Value | Aliases (string) | H.264 / JPEG | Sensor / VI | Notes |
+|---|---|---|---|---|
+| `0` | `"1080p"` | 1920×1080 | 1920×1080 | Default. Logical channels map 1:1 to hardware (`RAW=CH0`, `JPEG=CH1`, `H264=CH2`). |
+| `1` | `"720p"` | 1280×720 | 1920×1080 (VPSS scale) | Same 1:1 map. |
+| `2` | `"360p"` | 640×480 | 1920×1080 (VPSS scale) | Same 1:1 map. UI may label this 480p. |
+| `3` | `"5mp"`, `"2592"` | H.264 **2592×1944 @ 15**; JPEG preview **≤1280×960** (default 640×640, not 5MP) | **2592×1944 @ 15** | OV5647 5MP. Hardware remap: H.264→`VIDEO_CH0`, RAW (model input)→`VIDEO_CH1`, JPEG→`VIDEO_CH2`. RAW size is overwritten by the model node (e.g. 640×640). Do not enable JPEG at 2592×1944 (ION). Bounding boxes in `invoke` are in `data.resolution` space (preview JPEG when debug/websocket is on; otherwise H.264). `data.stream_resolution` is the H.264 size. |
 
 #### Response Parameters
 | Parameter | Type | Description |
@@ -155,6 +165,20 @@ Request: `sscma/v0/recamera/node/in/12345`
 "type": "camera",
 "config": {
            "option": 0
+       }
+}
+}
+```
+5MP example (`option: 3`, FPS locked to 15):
+```json
+{
+"type": 3,
+"name": "create",
+"data": {
+"type": "camera",
+"config": {
+           "option": 3,
+           "fps": 15
        }
 }
 }

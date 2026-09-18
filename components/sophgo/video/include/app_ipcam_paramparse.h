@@ -2,6 +2,7 @@
 #define __SOPHGO_VIDEO_PARAM_PARSE_H__
 
 #include <linux/cvi_comm_sys.h>
+#include <stdint.h>
 
 #include "app_ipcam_comm.h"
 #include "app_ipcam_sys.h"
@@ -15,6 +16,8 @@ extern "C" {
 
 int app_ipcam_Param_setVencChnType(int ch, PAYLOAD_TYPE_E enType);
 int app_ipcam_Param_Load(void);
+/* Size/fps of VI/ISP/VPSS group. Call after Param_Load, before startVideo. */
+int app_ipcam_Param_SetSensorOutput(uint32_t width, uint32_t height, float fps);
 
 #ifdef __cplusplus
 }

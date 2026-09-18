@@ -91,6 +91,11 @@ public:
     ma_err_t attach(int chn, MessageBox* msgbox);
     ma_err_t detach(int chn, MessageBox* msgbox);
 
+    int option() const { return option_; }
+    int channelWidth(int chn) const;
+    int channelHeight(int chn) const;
+    void sensorSize(int32_t& width, int32_t& height) const;
+
 protected:
     void threadEntry();
     void threadAudioEntry();
@@ -100,6 +105,12 @@ protected:
     int vpssCallback(void* pData, void* pArgs);
     static int vencCallbackStub(void* pData, void* pArgs, void* pUserData);
     static int vpssCallbackStub(void* pData, void* pArgs, void* pUserData);
+    int hwFromLogical(int logical) const;
+    int logicalFromHw(int hw) const;
+    bool h264UsesHwCh0() const;
+    bool jpegOnHwCh0() const;
+    bool jpegOnHwCh1() const;
+    bool streamOnlyH264OnCh1() const;
 
 private:
     std::vector<channel> channels_;

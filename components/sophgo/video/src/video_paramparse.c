@@ -268,12 +268,12 @@ static const APP_VENC_CHN_CFG_S venc_jpeg = {
     .VpssChn     = 0,
     .stJpegCodecParam =
         {
-            .quality   = 60,
+            .quality   = 92,
             .MCUPerECS = 0,
         },
     .enBindMode       = VENC_BIND_DISABLE,
     .enRcMode         = VENC_RC_MODE_MJPEGCBR,
-    .u32StreamBufSize = (512 << 10),
+    .u32StreamBufSize = (2 << 20),
 };
 
 static const APP_VENC_ROI_CFG_S roi_cfg = {0};
@@ -386,6 +386,39 @@ static void fix_vi_grp_attr(const APP_PARAM_SNS_CFG_T* pstSnsCfg, VPSS_GRP_ATTR_
 }
 
 #define APP_IPCAM_CHN_NUM 3
+
+int app_ipcam_Param_SetSensorOutput(uint32_t width, uint32_t height, float fps) {
+    if (width == 0 || height == 0 || fps <= 0.0f) {
+        APP_PROF_LOG_PRINT(LEVEL_ERROR, "SetSensorOutput invalid %ux%u fps=%f\n", width, height, fps);
+        return CVI_FAILURE;
+    }
+
+    APP_PARAM_VI_CTX_S* vi = app_ipcam_Vi_Param_Get();
+    if (vi->u32WorkSnsCnt == 0) {
+        APP_PROF_LOG_PRINT(LEVEL_ERROR, "SetSensorOutput: Param_Load first\n");
+        return CVI_FAILURE;
+    }
+
+    vi->astChnInfo[0].u32Width        = width;
+    vi->astChnInfo[0].u32Height       = height;
+    vi->astChnInfo[0].f32Fps          = fps;
+    vi->astChnInfo[0].enCompressMode  = COMPRESS_MODE_NONE;
+    vi->astSensorCfg[0].s32Framerate  = (CVI_S32)(fps + 0.5f);
+
+    APP_PARAM_VPSS_CFG_T* vpss = app_ipcam_Vpss_Param_Get();
+    APP_VPSS_GRP_CFG_T* pgrp   = &vpss->astVpssGrpCfg[0];
+    pgrp->stVpssGrpAttr.u32MaxW = width;
+    pgrp->stVpssGrpAttr.u32MaxH = height;
+    for (uint32_t i = 0; i < APP_IPCAM_CHN_NUM; i++) {
+        pgrp->astVpssChnAttr[i].u32Width  = width;
+        pgrp->astVpssChnAttr[i].u32Height = height;
+    }
+
+    APP_PROF_LOG_PRINT(LEVEL_INFO, "SetSensorOutput %ux%u @ %.1f fps (sns fps=%d)\n",
+                       width, height, fps, vi->astSensorCfg[0].s32Framerate);
+    printf("SetSensorOutput %ux%u @ %.1f fps\n", width, height, fps);
+    return CVI_SUCCESS;
+}
 
 extern ISP_SNS_MIRRORFLIP_TYPE_E g_aeOv5647_MirrorFip[VI_MAX_PIPE_NUM];
 extern ISP_SNS_MIRRORFLIP_TYPE_E g_aeGc2053_MirrorFip[VI_MAX_PIPE_NUM];
